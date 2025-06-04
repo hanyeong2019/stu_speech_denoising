@@ -1,0 +1,14 @@
+# 初始文件
+bini/
+bini_demo.py
+bini_ref.json
+reply.wav
+temp.mp3
+temp.wav
+test.wav
+
+#数据集
+data_raw/
+data_proc/
+
+#新文件
