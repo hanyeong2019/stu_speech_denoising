@@ -8,9 +8,14 @@ class _Enc(nn.Module):
             nn.Conv2d(1 , 64 , 3, 1, 1), nn.GELU(),
             nn.Conv2d(64, 128, 3, (2,1), 1), nn.GELU(),    # F ↓2
             nn.Conv2d(128,128, 3, (2,1), 1), nn.GELU())    # F ↓4
-        self.flat_dim = 128 * (257//4) * 128
-        self.mu, self.logv = nn.Linear(self.flat_dim, zdim), nn.Linear(self.flat_dim, zdim)
-        self.log_nu = nn.Parameter(torch.log(torch.tensor(10.)))   # Student-t 自由度 ν
+        # --- 动态推断展平维度 ---
+        with torch.no_grad():
+            dummy = torch.zeros(1, 1, 257, 128)   # (B,C,F,T)
+            self.flat_dim = self.conv(dummy).view(1, -1).size(1)
+
+        self.mu     = nn.Linear(self.flat_dim, zdim)
+        self.logv   = nn.Linear(self.flat_dim, zdim)
+        self.log_nu = nn.Parameter(torch.log(torch.tensor(10.)))
 
     def forward(self, x):
         h = self.conv(x).flatten(1)
@@ -21,15 +26,22 @@ class _Dec(nn.Module):
         super().__init__()
         self.fc = nn.Linear(zdim, 128 * (257//4) * 128)
         self.deconv = nn.Sequential(
-            nn.ConvTranspose2d(128,128,3,(2,1),1,output_padding=(1,0)), nn.GELU(),
-            nn.ConvTranspose2d(128, 64,3,(2,1),1,output_padding=(1,0)), nn.GELU(),
+            nn.ConvTranspose2d(128,128,3,(2,1),1,output_padding=(0,0)), nn.GELU(),
+            nn.ConvTranspose2d(128, 64,3,(2,1),1,output_padding=(0,0)), nn.GELU(),
             nn.Conv2d(64,1,3,1,1), nn.Sigmoid())
-
-    def forward(self, z, noisy):                       # noisy:(B,1,257,128)
+    def forward(self, z, noisy):                 # noisy:(B,1,257,128)
         B = z.size(0)
-        h = self.fc(z).view(B,128,257//4,128)
-        mask = self.deconv(h)
-        return mask * noisy                           # 输出幅度谱
+        h = self.fc(z).view(B,128,257//4,128)    # (B,128,65,128)
+        mask = self.deconv(h)                    # 得到 (B,1,253,128) 或别的
+        # ---- 对齐频率维 ----
+        Freq = noisy.size(2)                     # =257
+        if mask.size(2) > Freq:                  # 裁剪
+            mask = mask[:, :, :Freq, :]
+        elif mask.size(2) < Freq:                # 右侧 0 填充
+            pad = Freq - mask.size(2)
+            mask = F.pad(mask, (0,0,0,pad))      # pad freq-dim (left=0, right=pad)
+        return mask * noisy
+
 
 # ─────────────────── Re-parameterization ───────────────────
 def rep_gauss(mu, logv):
