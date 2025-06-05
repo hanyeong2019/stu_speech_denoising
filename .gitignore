@@ -8,8 +8,8 @@ temp.wav
 test.wav
 
 #数据集
-data_raw/
-data_proc/
+# data_raw/
+# data_proc/
 
 #新文件
 *.xml
