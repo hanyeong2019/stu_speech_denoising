@@ -19,7 +19,12 @@ class _Enc(nn.Module):
 
     def forward(self, x):
         h = self.conv(x).flatten(1)
-        return self.mu(h), self.logv(h), self.log_nu.exp()
+        mu = self.mu(h)
+        logv = self.logv(h)
+        nu = self.log_nu.exp()
+        nu = torch.clamp(nu, min=1.0, max=100.0)  # 添加这一行
+        return mu, logv, nu
+
 
 class _Dec(nn.Module):
     def __init__(self, zdim=32):
@@ -47,11 +52,22 @@ class _Dec(nn.Module):
 def rep_gauss(mu, logv):
     return mu + (0.5*logv).exp() * torch.randn_like(mu)
 
+# def rep_student(mu, logv, nu):
+#     std = torch.exp(0.5 * logv)
+#     gamma = torch.distributions.Gamma(nu / 2, 0.5)
+#     g = gamma.sample(std.shape).to(std.device)
+#     eps = torch.randn_like(std)
+#     return mu + std * eps / torch.sqrt(g / nu)
+
 def rep_student(mu, logv, nu):
-    std = (0.5*logv).exp()
-    eps = torch.randn_like(std)
-    g   = torch.empty_like(std).chi2_(nu)             # s ~ χ²(ν)
-    return mu + std * eps / torch.sqrt(g / nu)
+    if torch.isnan(nu).any():
+        raise ValueError(f"‼️ nu 出现 NaN:{nu}")
+    nu = torch.clamp(nu, min=1.0, max=100.0)
+    gamma = torch.distributions.Gamma(nu / 2, 0.5)
+    g = torch.clamp(gamma.sample(mu.shape), min=1e-4).to(mu.device)
+    eps = torch.randn_like(mu)
+    return mu + torch.exp(0.5 * logv) * eps / torch.sqrt(g / nu)
+
 
 # ─────────────────── KL 散度函数 ───────────────────
 def kl_gaussian(mu, logv):
@@ -80,7 +96,7 @@ class GaussVAE(nn.Module):
         return rec + self.beta*kl, rec, kl, recon
 
 class StudentTVAE(nn.Module):
-    def __init__(self, z=32, beta=0.5):
+    def __init__(self, z=32, beta=0.3):
         super().__init__(); self.enc=_Enc(z); self.dec=_Dec(z); self.beta=beta
     def forward(self, clean, noisy):
         mu, logv, nu = self.enc(clean)
